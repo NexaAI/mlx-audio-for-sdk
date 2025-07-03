@@ -1,6 +1,7 @@
 # modified
 
 import importlib
+import json
 import logging
 from pathlib import Path
 from typing import List, Optional
@@ -92,18 +93,34 @@ def get_available_models():
     return available_models
 
 
-def get_model_and_args(model_type: str, model_name: List[str]):
+def load_config(model_path: Path) -> dict:
     """
-    Retrieve the model architecture module based on the model type and name.
-
-    This function attempts to find the appropriate model architecture by:
-    1. Checking if the model_type is directly in the MODEL_REMAPPING dictionary
-    2. Looking for partial matches in segments of the model_name
+    Load the model configuration from config.json.
 
     Args:
-        model_type (str): The type of model to load (e.g., "outetts").
-        model_name (List[str]): List of model name components that might contain
-                               remapping information.
+        model_path (Path): Path to the model directory.
+
+    Returns:
+        dict: The model configuration.
+
+    Raises:
+        FileNotFoundError: If config.json is not found.
+    """
+    try:
+        with open(model_path / "config.json", "r") as f:
+            config = json.load(f)
+    except FileNotFoundError:
+        logging.error(f"Config file not found in {model_path}")
+        raise
+    return config
+
+
+def get_model_and_args(model_type: str):
+    """
+    Retrieve the model architecture module based on the model type.
+
+    Args:
+        model_type (str): The type of model to load (e.g., "whisper", "parakeet").
 
     Returns:
         Tuple[module, str]: A tuple containing:
@@ -113,21 +130,8 @@ def get_model_and_args(model_type: str, model_name: List[str]):
     Raises:
         ValueError: If the model type is not supported (module import fails).
     """
-    # Stage 1: Check if the model type is in the remapping
+    # Check if the model type is in the remapping
     model_type = MODEL_REMAPPING.get(model_type, model_type)
-
-    # Stage 2: Check for partial matches in segments of the model name
-    models = get_available_models()
-    if model_name is not None:
-        for part in model_name:
-            # First check if the part matches an available model directory name
-            if part in models:
-                model_type = part
-
-            # Then check if the part is in our custom remapping dictionary
-            if part in MODEL_REMAPPING:
-                model_type = MODEL_REMAPPING[part]
-                break
 
     try:
         arch = importlib.import_module(f"mlx_audio.stt.models.{model_type}")
@@ -156,19 +160,20 @@ def load_model(model_path: str, lazy: bool = False, strict: bool = True, **kwarg
         FileNotFoundError: If the weight files (.safetensors) are not found.
         ValueError: If the model class or args class are not found or cannot be instantiated.
     """
-    model_name = None
-    model_type = None
+    # Convert to Path object for easier handling
     if isinstance(model_path, str):
-        model_name = model_path.lower().split("/")[-1].split("-")
-    elif isinstance(model_path, Path):
-        index = model_path.parts.index("hub")
-        model_name = model_path.parts[index + 1].lower().split("--")[-1].split("-")
-    else:
+        model_path = Path(model_path)
+    elif not isinstance(model_path, Path):
         raise ValueError(f"Invalid model path type: {type(model_path)}")
 
-    model_class, model_type = get_model_and_args(
-        model_type=model_type, model_name=model_name
-    )
+    # Load configuration to get model_type
+    config = load_config(model_path)
+    model_type = config.get("model_type")
+    
+    if model_type is None:
+        raise ValueError(f"Model type not found in config.json at {model_path}")
+
+    model_class, model_type = get_model_and_args(model_type)
     model = model_class.Model.from_pretrained(model_path)
 
     if not lazy:
