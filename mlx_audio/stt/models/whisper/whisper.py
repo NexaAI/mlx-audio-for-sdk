@@ -1,3 +1,4 @@
+# modified
 # Copyright © 2023 Apple Inc.
 
 import base64
@@ -14,7 +15,6 @@ import mlx.core as mx
 import mlx.nn as nn
 import numpy as np
 import tqdm
-from huggingface_hub import snapshot_download
 from mlx.utils import tree_unflatten
 
 from .audio import (
@@ -319,14 +319,18 @@ class Model(nn.Module):
     @classmethod
     def from_pretrained(
         cls,
-        path_or_hf_repo: str = "mlx-community/whisper-tiny",
+        model_path: str,
         dtype: mx.Dtype = mx.float16,
     ) -> "Whisper":
-        model_path = Path(path_or_hf_repo)
+        model_path = Path(model_path)
         if not model_path.exists():
-            model_path = Path(snapshot_download(repo_id=path_or_hf_repo))
+            raise FileNotFoundError(f"Model directory not found: {model_path}")
 
-        with open(str(model_path / "config.json"), "r") as f:
+        config_path = model_path / "config.json"
+        if not config_path.exists():
+            raise FileNotFoundError(f"config.json not found in {model_path}")
+
+        with open(str(config_path), "r") as f:
             config = json.loads(f.read())
             config.pop("model_type", None)
             quantization = config.pop("quantization", None)
@@ -336,6 +340,10 @@ class Model(nn.Module):
         wf = model_path / "weights.safetensors"
         if not wf.exists():
             wf = model_path / "weights.npz"
+        
+        if not wf.exists():
+            raise FileNotFoundError(f"Neither weights.safetensors nor weights.npz found in {model_path}")
+        
         weights = mx.load(str(wf))
 
         model = Model(model_args, dtype)

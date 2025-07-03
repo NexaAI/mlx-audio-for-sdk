@@ -1,3 +1,5 @@
+# modified
+
 import importlib
 import logging
 from pathlib import Path
@@ -6,7 +8,6 @@ from typing import List, Optional
 import mlx.core as mx
 import numpy as np
 import soundfile as sf
-from huggingface_hub import snapshot_download
 from scipy import signal
 
 SAMPLE_RATE = 16000
@@ -51,37 +52,23 @@ def load_audio(
     return mx.array(audio, dtype=dtype).mean(axis=1)
 
 
-def get_model_path(path_or_hf_repo: str, revision: Optional[str] = None) -> Path:
+def get_model_path(path: str) -> Path:
     """
-    Ensures the model is available locally. If the path does not exist locally,
-    it is downloaded from the Hugging Face Hub.
+    Ensures the model is available locally. Only works with local paths.
 
     Args:
-        path_or_hf_repo (str): The local path or Hugging Face repository ID of the model.
-        revision (str, optional): A revision id which can be a branch name, a tag, or a commit hash.
+        path (str): The local path to the model.
 
     Returns:
         Path: The path to the model.
+        
+    Raises:
+        FileNotFoundError: If the local path does not exist.
     """
-    model_path = Path(path_or_hf_repo)
+    model_path = Path(path)
 
     if not model_path.exists():
-        model_path = Path(
-            snapshot_download(
-                path_or_hf_repo,
-                revision=revision,
-                allow_patterns=[
-                    "*.json",
-                    "*.safetensors",
-                    "*.py",
-                    "*.model",
-                    "*.tiktoken",
-                    "*.txt",
-                    "*.jsonl",
-                    "*.yaml",
-                ],
-            )
-        )
+        raise FileNotFoundError(f"Model path '{path}' does not exist locally. Please ensure the model is available at the specified path.")
 
     return model_path
 
