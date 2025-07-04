@@ -7,7 +7,6 @@ from typing import Any, Optional, Tuple, Union
 
 import mlx.core as mx
 import mlx.nn as nn
-from huggingface_hub import snapshot_download
 
 
 @dataclass
@@ -713,37 +712,27 @@ class Wav2Vec2Model(nn.Module):
         return sanitized_weights
 
     @classmethod
-    def from_pretrained(cls, repo_id: str, **kwargs):
-        path = fetch_from_hub(repo_id)
+    def from_pretrained(cls, model_path: str, **kwargs):
+        model_path = Path(model_path)
+        if not model_path.exists():
+            raise FileNotFoundError(f"Model directory not found: {model_path}")
 
-        if path is None:
-            raise ValueError(f"Could not find model {path}")
+        config_path = model_path / "config.json"
+        if not config_path.exists():
+            raise FileNotFoundError(f"config.json not found in {model_path}")
 
-        config_path = path / "config.json"
-        model_path = path / "model.safetensors"
+        model_path_safetensors = model_path / "model.safetensors"
+        if not model_path_safetensors.exists():
+            raise FileNotFoundError(f"model.safetensors not found in {model_path}")
 
         with open(config_path, "r") as f:
             config_dict = json.load(f)
         config = ModelConfig.from_dict(config_dict)
         model = Wav2Vec2Model(config)
 
-        weights = mx.load(model_path.as_posix(), format="safetensors")
+        weights = mx.load(model_path_safetensors.as_posix(), format="safetensors")
         weights = model.sanitize(weights)
         model.load_weights(list(weights.items()))
         mx.eval(model.parameters())
 
         return model
-
-
-# fetch model from hub
-
-
-def fetch_from_hub(model_path: str) -> Path:
-    if not Path(model_path).exists():
-        model_path = Path(
-            snapshot_download(
-                repo_id=model_path,
-                allow_patterns=["*.safetensors", "*.json"],
-            )
-        )
-    return Path(model_path)

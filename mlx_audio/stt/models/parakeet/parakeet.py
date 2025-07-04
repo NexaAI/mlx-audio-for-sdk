@@ -6,7 +6,6 @@ from typing import Callable, Optional
 import mlx.core as mx
 import mlx.nn as nn
 from dacite import from_dict
-from huggingface_hub import hf_hub_download
 from mlx.utils import tree_flatten, tree_unflatten
 
 from mlx_audio.stt.models.parakeet import tokenizer
@@ -240,17 +239,23 @@ class Model(nn.Module):
         return model
 
     @classmethod
-    def from_pretrained(cls, path_or_hf_repo: str, *, dtype: mx.Dtype = mx.bfloat16):
-        """Loads model from Hugging Face or local directory"""
+    def from_pretrained(cls, model_path: str, *, dtype: mx.Dtype = mx.bfloat16):
+        """Loads model from local directory"""
+        
+        model_path = Path(model_path)
+        if not model_path.exists():
+            raise FileNotFoundError(f"Model directory not found: {model_path}")
 
-        try:
-            config = json.load(
-                open(hf_hub_download(path_or_hf_repo, "config.json"), "r")
-            )
-            weight = hf_hub_download(path_or_hf_repo, "model.safetensors")
-        except Exception:
-            config = json.load(open(Path(path_or_hf_repo) / "config.json", "r"))
-            weight = str(Path(path_or_hf_repo) / "model.safetensors")
+        config_path = model_path / "config.json"
+        if not config_path.exists():
+            raise FileNotFoundError(f"config.json not found in {model_path}")
+
+        weight_path = model_path / "model.safetensors"
+        if not weight_path.exists():
+            raise FileNotFoundError(f"model.safetensors not found in {model_path}")
+
+        config = json.load(open(config_path, "r"))
+        weight = str(weight_path)
 
         model = cls.from_config(config)
         model.load_weights(weight)
