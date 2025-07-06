@@ -171,9 +171,22 @@ def load_model(model_path: str, lazy: bool = False, strict: bool = True, **kwarg
     model_type = config.get("model_type")
     
     if model_type is None:
-        raise ValueError(f"Model type not found in config.json at {model_path}")
-
-    model_class, model_type = get_model_and_args(model_type)
+        # Fallback: try to infer model_type from the path name
+        directory_name = model_path.name
+        parts = directory_name.split("-")
+        
+        model_class = None
+        for part in parts:
+            try:
+                model_class, model_type = get_model_and_args(part)
+                break
+            except ValueError:
+                continue
+        
+        if model_class is None:
+            raise ValueError(f"Model type not found in config.json at {model_path} and could not be inferred from path name '{directory_name}'")
+    else:
+        model_class, model_type = get_model_and_args(model_type)
     model = model_class.Model.from_pretrained(model_path)
 
     if not lazy:
