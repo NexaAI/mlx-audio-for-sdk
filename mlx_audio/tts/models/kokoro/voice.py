@@ -10,6 +10,7 @@ def load_voice_tensor(path: str) -> np.ndarray:
     """
     Load a voice pack .pt file into a NumPy array.
     Handles either flat layout or one extra top-level folder.
+    Improved version that works without PyTorch installed.
     """
     # map PyTorch storage names to NumPy dtypes
     _STORAGE_TO_DTYPE = {
@@ -23,6 +24,17 @@ def load_voice_tensor(path: str) -> np.ndarray:
         "ShortStorage": np.int16,
         "BoolStorage": np.bool_,
     }
+    
+    # Create mock storage classes to handle cases where torch isn't available
+    class MockStorage:
+        def __init__(self, name):
+            self.__name__ = name
+    
+    # Create storage class instances
+    _MOCK_STORAGE_CLASSES = {
+        name: MockStorage(name) for name in _STORAGE_TO_DTYPE.keys()
+    }
+    
     storages: dict[str, np.ndarray] = {}
 
     with zipfile.ZipFile(path, "r") as zf:
@@ -47,7 +59,11 @@ def load_voice_tensor(path: str) -> np.ndarray:
                 raise RuntimeError(f"Unknown persistent id: {typename}")
             if root_key not in storages:
                 raw = zf.read(f"{prefix}data/{root_key}")
-                name = storage_type.__name__
+                # Get storage type name more robustly
+                if hasattr(storage_type, '__name__'):
+                    name = storage_type.__name__
+                else:
+                    name = str(storage_type)
                 try:
                     dtype = _STORAGE_TO_DTYPE[name]
                 except KeyError:
@@ -72,9 +88,25 @@ def load_voice_tensor(path: str) -> np.ndarray:
                 return _persistent_load(pid)
 
             def find_class(self, module, name):
+                # Handle torch utilities
                 if module == "torch._utils" and name == "_rebuild_tensor_v2":
                     return _rebuild_tensor_v2
-                return super().find_class(module, name)
+                
+                # Handle torch storage classes
+                if module == "torch" and name in _STORAGE_TO_DTYPE:
+                    return _MOCK_STORAGE_CLASSES[name]
+                
+                # Handle other torch classes that we don't need
+                if module.startswith("torch"):
+                    # Return a dummy function for unused torch classes
+                    return lambda *args, **kwargs: None
+                
+                # For everything else, use default behavior
+                try:
+                    return super().find_class(module, name)
+                except (ImportError, AttributeError):
+                    # If we can't find the class, create a mock
+                    return lambda *args, **kwargs: None
 
         data_pkl = zf.read(f"{prefix}data.pkl")
         unpickler = _NoTorchUnpickler(io.BytesIO(data_pkl))
