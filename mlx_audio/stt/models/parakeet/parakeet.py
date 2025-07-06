@@ -1,12 +1,13 @@
 import json
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Callable, Optional
+from typing import Callable, Optional, Union
 
 import mlx.core as mx
 import mlx.nn as nn
 from dacite import from_dict
 from mlx.utils import tree_flatten, tree_unflatten
+import numpy as np
 
 from mlx_audio.stt.models.parakeet import tokenizer
 from mlx_audio.stt.models.parakeet.alignment import (
@@ -119,7 +120,7 @@ class Model(nn.Module):
 
     def generate(
         self,
-        path: Path | str,
+        audio: Union[str, Path, mx.array, np.ndarray],
         *,
         dtype: mx.Dtype = mx.bfloat16,
         chunk_duration: Optional[float] = None,
@@ -127,10 +128,10 @@ class Model(nn.Module):
         chunk_callback: Optional[Callable] = None,
     ) -> AlignedResult:
         """
-        Transcribe an audio file, with optional chunking for long files.
+        Transcribe an audio file or audio data, with optional chunking for long files.
 
         Args:
-            path: Path to the audio file
+            audio: Path to the audio file OR audio data as array
             dtype: Data type for processing
             chunk_duration: If provided, splits audio into chunks of this length for processing
             overlap_duration: Overlap between chunks (only used when chunking)
@@ -139,10 +140,21 @@ class Model(nn.Module):
         Returns:
             Transcription result with aligned tokens and sentences
         """
-        audio_path = Path(path)
-        audio_data = load_audio(
-            audio_path, self.preprocessor_config.sample_rate, dtype=dtype
-        )
+        # Handle different input types
+        if isinstance(audio, (str, Path)):
+            # Load from file path
+            audio_path = Path(audio)
+            audio_data = load_audio(
+                audio_path, self.preprocessor_config.sample_rate, dtype=dtype
+            )
+        elif isinstance(audio, mx.array):
+            # Use provided MLX array directly
+            audio_data = audio.astype(dtype)
+        elif isinstance(audio, np.ndarray):
+            # Convert numpy array to MLX array
+            audio_data = mx.array(audio, dtype=dtype)
+        else:
+            raise ValueError(f"Unsupported audio input type: {type(audio)}")
 
         if chunk_duration is None:
             mel = log_mel_spectrogram(audio_data, self.preprocessor_config)

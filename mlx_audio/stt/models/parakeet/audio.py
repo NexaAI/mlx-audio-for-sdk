@@ -46,6 +46,12 @@ def log_mel_spectrogram(x: mx.array, args: PreprocessArgs) -> mx.array:
     window_fn = STR_TO_WINDOW_FN.get(args.window, None)
     window = window_fn(args.win_length) if window_fn else hanning(args.win_length)
 
+    # Ensure input is long enough for STFT (minimum n_fft samples required)
+    min_length = args.n_fft
+    if x.shape[-1] < min_length:
+        pad_length = min_length - x.shape[-1]
+        x = mx.pad(x, ((0, pad_length),), constant_values=args.pad_value)
+
     x = stft(x, args.n_fft, args.hop_length, args.win_length, window)
     x = mx.square(mx.abs(x)).astype(original_dtype)
     filters = mel_filters(
