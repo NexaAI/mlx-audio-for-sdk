@@ -6,7 +6,6 @@ from typing import Any, Generator, List, Optional, Tuple, Union
 
 import mlx.core as mx
 import mlx.nn as nn
-from huggingface_hub import hf_hub_download
 from misaki import en, espeak
 
 from .voice import load_voice_tensor
@@ -67,7 +66,6 @@ class KokoroPipeline:
         self,
         lang_code: str,
         model: nn.Module,
-        repo_id: str,
         trf: bool = False,
     ):
         """Initialize a KokoroPipeline.
@@ -76,17 +74,11 @@ class KokoroPipeline:
             lang_code: Language code for G2P processing
             model: KokoroModel instance, True to create new model, False for no model
             trf: Whether to use transformer-based G2P
-            device: Override default device selection ('cuda' or 'cpu', or None for auto)
-                   If None, will auto-select cuda if available
-                   If 'cuda' and not available, will explicitly raise an error
         """
         lang_code = lang_code.lower()
         lang_code = ALIASES.get(lang_code, lang_code)
         assert lang_code in LANG_CODES, (lang_code, LANG_CODES)
         self.lang_code = lang_code
-        self.repo_id = repo_id
-        if repo_id is None:
-            raise ValueError("repo_id is required to load voices")
         self.model = model
         self.voices = {}
         if lang_code in "ab":
@@ -132,7 +124,8 @@ class KokoroPipeline:
         if voice.endswith(".pt"):
             f = voice
         else:
-            f = hf_hub_download(repo_id=self.repo_id, filename=f"voices/{voice}.pt")
+            # we may need to adjust the dirname. Maybe sit should be loaded from a dir passed in or some other hardcoded dir.
+            f = f"voices/{voice}.pt"
             if not voice.startswith(self.lang_code):
                 v = LANG_CODES.get(voice, voice)
                 p = LANG_CODES.get(self.lang_code, self.lang_code)
@@ -172,7 +165,7 @@ class KokoroPipeline:
         tokens: List[en.MToken],
         next_count: int,
         waterfall: List[str] = ["!.?…", ":;", ",—"],
-        bumps: List[str] = [")", "”"],
+        bumps: List[str] = [")", ""],
     ) -> int:
         for w in waterfall:
             z = next(

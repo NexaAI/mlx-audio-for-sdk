@@ -4,53 +4,37 @@ import json
 import logging
 import shutil
 from pathlib import Path
-from textwrap import dedent
 from typing import List, Optional, Tuple, Union
 
 import mlx.core as mx
 import mlx.nn as nn
-from huggingface_hub import snapshot_download
 from mlx.utils import tree_flatten
 from mlx_lm.convert import mixed_quant_predicate_builder
 from mlx_lm.utils import dequantize_model, quantize_model, save_config, save_model
-from transformers import AutoConfig
 
 MODEL_REMAPPING = {"outetts": "outetts", "spark": "spark", "sam": "sesame"}
 MAX_FILE_SIZE_GB = 5
 MODEL_CONVERSION_DTYPES = ["float16", "bfloat16", "float32"]
 
 
-def get_model_path(path_or_hf_repo: str, revision: Optional[str] = None) -> Path:
+def get_model_path(path: str, revision: Optional[str] = None) -> Path:
     """
-    Ensures the model is available locally. If the path does not exist locally,
-    it is downloaded from the Hugging Face Hub.
+    Ensures the model is available locally. Only works with local paths.
 
     Args:
-        path_or_hf_repo (str): The local path or Hugging Face repository ID of the model.
-        revision (str, optional): A revision id which can be a branch name, a tag, or a commit hash.
+        path_or_hf_repo (str): The local path to the model.
+        revision (str, optional): Ignored for local paths, kept for compatibility.
 
     Returns:
         Path: The path to the model.
+        
+    Raises:
+        FileNotFoundError: If the local path does not exist.
     """
-    model_path = Path(path_or_hf_repo)
+    model_path = Path(path)
 
     if not model_path.exists():
-        model_path = Path(
-            snapshot_download(
-                path_or_hf_repo,
-                revision=revision,
-                allow_patterns=[
-                    "*.json",
-                    "*.safetensors",
-                    "*.py",
-                    "*.model",
-                    "*.tiktoken",
-                    "*.txt",
-                    "*.jsonl",
-                    "*.yaml",
-                ],
-            )
-        )
+        raise FileNotFoundError(f"Model path '{path}' does not exist locally. Please ensure the model is available at the specified path.")
 
     return model_path
 
@@ -122,11 +106,11 @@ def get_model_and_args(model_type: str, model_name: List[str]):
 
 
 def load_config(model_path: Union[str, Path], **kwargs) -> dict:
-    """Load model configuration from a path or Hugging Face repo.
+    """Load model configuration from a local path.
 
     Args:
-        model_path: Local path or Hugging Face repo ID to load config from
-        **kwargs: Additional keyword arguments to pass to the config loader
+        model_path: Local path to load config from
+        **kwargs: Additional keyword arguments (ignored for local loading)
 
     Returns:
         dict: Model configuration
@@ -138,13 +122,10 @@ def load_config(model_path: Union[str, Path], **kwargs) -> dict:
         model_path = get_model_path(model_path)
 
     try:
-        return AutoConfig.from_pretrained(model_path, **kwargs).to_dict()
-    except ValueError:
-        try:
-            with open(model_path / "config.json", encoding="utf-8") as f:
-                return json.load(f)
-        except FileNotFoundError as exc:
-            raise FileNotFoundError(f"Config not found at {model_path}") from exc
+        with open(model_path / "config.json", encoding="utf-8") as f:
+            return json.load(f)
+    except FileNotFoundError as exc:
+        raise FileNotFoundError(f"Config not found at {model_path}") from exc
 
 
 def load_model(
@@ -171,8 +152,7 @@ def load_model(
         model_name = model_path.lower().split("/")[-1].split("-")
         model_path = get_model_path(model_path)
     elif isinstance(model_path, Path):
-        index = model_path.parts.index("hub")
-        model_name = model_path.parts[index + 1].lower().split("--")[-1].split("-")
+        model_name = model_path.name.lower().split("-")
     else:
         raise ValueError(f"Invalid model path type: {type(model_path)}")
 
@@ -183,6 +163,10 @@ def load_model(
     model_type = config.get("model_type", None)
     if model_type is None:
         model_type = model_name[0].lower() if model_name is not None else None
+        
+    # TODO: remove this check once we cleaned other models.
+    if model_type != "kokoro":
+        raise ValueError(f"Model type {model_type} not supported. Only kokoro is supported for now.")
 
     quantization = config.get("quantization", None)
 
@@ -196,21 +180,13 @@ def load_model(
         logging.error(f"No safetensors found in {model_path}")
         message = f"""
 No safetensors found in {model_path}
-Create safetensors using the following code:
-```
-from transformers import AutoModelForCausalLM, AutoProcessor
+Please ensure that the model directory contains the required .safetensors weight files.
+The model directory should contain:
+- config.json (model configuration)
+- *.safetensors (model weights)
+- Any other required model files
 
-model_id= "<huggingface_model_id>"
-model = AutoModelForCausalLM.from_pretrained(model_id)
-processor = AutoProcessor.from_pretrained(model_id)
-
-model.save_pretrained("<local_dir>")
-processor.save_pretrained("<local_dir>")
-```
-Then use the <local_dir> as the --hf-path in the convert script.
-```
-python -m mlx_audio.tts.convert --hf-path <local_dir> --mlx-path <mlx_dir>
-```
+If you have a PyTorch model, you may need to convert it to safetensors format first.
         """
         raise FileNotFoundError(message)
 
@@ -268,61 +244,6 @@ python -m mlx_audio.tts.convert --hf-path <local_dir> --mlx-path <mlx_dir>
     return model
 
 
-def fetch_from_hub(
-    model_path: Path, lazy: bool = False, **kwargs
-) -> Tuple[nn.Module, dict]:
-    model = load_model(model_path, lazy, **kwargs)
-    config = load_config(model_path, **kwargs)
-    return model, config
-
-
-def upload_to_hub(path: str, upload_repo: str, hf_path: str):
-    """
-    Uploads the model to Hugging Face hub.
-
-    Args:
-        path (str): Local path to the model.
-        upload_repo (str): Name of the HF repo to upload to.
-        hf_path (str): Path to the original Hugging Face model.
-    """
-    import os
-
-    from huggingface_hub import HfApi, ModelCard, logging
-
-    from ..version import __version__
-
-    card = ModelCard.load(hf_path)
-    card.data.tags = ["mlx"] if card.data.tags is None else card.data.tags + ["mlx"]
-    card.text = dedent(
-        f"""
-        # {upload_repo}
-        This model was converted to MLX format from [`{hf_path}`](https://huggingface.co/{hf_path}) using mlx-audio version **{__version__}**.
-        Refer to the [original model card](https://huggingface.co/{hf_path}) for more details on the model.
-        ## Use with mlx
-
-        ```bash
-        pip install -U mlx-audio
-        ```
-
-        ```bash
-        python -m mlx_audio.tts.generate --model {upload_repo} --text "Describe this image."
-        ```
-        """
-    )
-    card.save(os.path.join(path, "README.md"))
-
-    logging.set_verbosity_info()
-
-    api = HfApi()
-    api.create_repo(repo_id=upload_repo, exist_ok=True)
-    api.upload_folder(
-        folder_path=path,
-        repo_id=upload_repo,
-        repo_type="model",
-    )
-    print(f"Upload successful, go to https://huggingface.co/{upload_repo} for details.")
-
-
 def convert(
     hf_path: str,
     mlx_path: str = "mlx_model",
@@ -330,7 +251,6 @@ def convert(
     q_group_size: int = 64,
     q_bits: int = 4,
     dtype: str = None,
-    upload_repo: str = None,
     revision: Optional[str] = None,
     dequantize: bool = False,
     trust_remote_code: bool = True,
@@ -338,9 +258,8 @@ def convert(
 ):
     print("[INFO] Loading")
     model_path = get_model_path(hf_path, revision=revision)
-    model, config = fetch_from_hub(
-        model_path, lazy=True, trust_remote_code=trust_remote_code
-    )
+    model = load_model(model_path, lazy=True, trust_remote_code=trust_remote_code)
+    config = load_config(model_path, trust_remote_code=trust_remote_code)
 
     if isinstance(quant_predicate, str):
         quant_predicate = mixed_quant_predicate_builder(quant_predicate, model)
@@ -416,6 +335,3 @@ def convert(
     save_model(mlx_path, model, donate_model=True)
 
     save_config(config, config_path=mlx_path / "config.json")
-
-    if upload_repo is not None:
-        upload_to_hub(mlx_path, upload_repo, hf_path)
